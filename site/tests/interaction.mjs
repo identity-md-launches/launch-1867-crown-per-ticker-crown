@@ -2,9 +2,12 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFile, mkdir, stat } from 'node:fs/promises';
 import { dirname, resolve, extname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { encodeFunctionResult, decodeFunctionData, encodeErrorResult, parseEther, keccak256, toBytes } from 'viem';
-import { chromium } from '/opt/imd-tools/playwright-mcp/node_modules/playwright/index.mjs';
+
+// Playwright lives outside the repository. IMD_PLAYWRIGHT names its module (as the design probe does); the
+// fallback is the worker tool path used when this suite was first written.
+const { chromium } = await import(pathToFileURL(process.env.IMD_PLAYWRIGHT ?? '/opt/imd-tools/playwright-mcp/node_modules/playwright/index.mjs').href);
 
 // These addresses and values are isolated browser-test fixtures. They are never copied to dist.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -36,7 +39,7 @@ function apply(tx) {
   const value = BigInt(tx.value ?? 0);
   if (f === 'openChallenge') { state.active = 1n; state.opens = state.now; state.ends = state.now + 72 * 3600; state.finalAt = state.ends + 86400; state.challengerStake = value; state.ownChallenger = value; state.total += value; }
   if (f === 'stake') { if (Number(args[1]) === 0) { state.kingStake += value; state.ownKing += value; } else { state.challengerStake += value; state.ownChallenger += value; } state.total += value; }
-  if (f === 'finalize') { state.finalized = true; state.won = state.challengerStake > state.kingStake && state.total >= eth('0.05'); state.active = 0n; if (state.won) { state.king = A.challenger; state.beneficiary = A.account; state.reign = state.now; } }
+  if (f === 'finalize') { state.finalized = true; state.won = state.challengerStake > state.kingStake && state.total >= eth('0.05'); state.active = 0n; if (state.won) { state.king = A.challenger; state.beneficiary = A.account; if (state.kingStake > 0n) state.reign = state.now; } }
   if (f === 'claim') state.claimed = true;
   if (f === 'setOperator') state.operator = args[1];
   if (f === 'redeemClaim') state.claims -= args[1];

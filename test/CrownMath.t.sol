@@ -249,15 +249,18 @@ contract CrownMathTest is Test {
         vm.warp(vm.getBlockTimestamp() + 7 days);
         uint256 id = open(address(challengerToken));
         stakeAs(challenger, id, CrownRegistry.Side.Challenger, 0.04 ether);
+        address loyalist = makeAddr("loyalist");
+        vm.deal(loyalist, 1 ether);
+        stakeAs(loyalist, id, CrownRegistry.Side.King, 0.01 ether); // defended, so the flip restarts the clock
         vm.warp(vm.getBlockTimestamp() + 96 hours);
         registry.finalize(id);
         (address t, address b, uint64 since) = registry.king(TICKER);
         assertEq(t, address(challengerToken));
         assertEq(b, challenger);
         assertEq(since, vm.getBlockTimestamp());
+        vm.prank(loyalist);
+        registry.claim(id);
 
-        address loyalist = makeAddr("loyalist");
-        vm.deal(loyalist, 1 ether);
         // the new king is itself protected for a week, then the old token can come back
         vm.prank(loyalist);
         vm.expectRevert(CrownRegistry.ReignTooShort.selector);

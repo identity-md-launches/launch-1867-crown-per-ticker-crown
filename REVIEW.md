@@ -1,5 +1,7 @@
 # Scoped implementation review
 
+The revision round that followed the independent review (partial-fill and oversized-amount refusal, synced-currency checks in `payCrown`, the self-challenge and undefended-flip rules, and the pool-opening refusals) is recorded in `VALIDATION.md` under "Revision round" and answered finding by finding in `.imd-responses.json`; the rules themselves are in `README.md`. Slither could not be re-run for it on this worker.
+
 This records the frontend implementer's checks and the small Solidity change needed by the required Foundry/Slither profile. It is not a claim of an independent security audit or a deployed-chain review. The accepted registry economics, hook fee routing, permissions, token behavior and deployment model are retained.
 
 ## Treasury fallback change

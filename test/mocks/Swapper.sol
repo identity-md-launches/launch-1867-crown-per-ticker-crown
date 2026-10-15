@@ -27,7 +27,12 @@ contract Swapper is IUnlockCallback {
     /// @notice Swap with v4's sign convention: negative `amountSpecified` is exact input, positive exact output.
     function swapExact(PoolKey memory key, bool zeroForOne, int256 amountSpecified) public returns (BalanceDelta) {
         uint160 limit = zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1;
-        bytes memory data = abi.encode(uint8(0), abi.encode(key, SwapParams(zeroForOne, amountSpecified, limit)));
+        return swapWith(key, SwapParams(zeroForOne, amountSpecified, limit));
+    }
+
+    /// @notice Swap with the caller's own amount and price limit.
+    function swapWith(PoolKey memory key, SwapParams memory params) public returns (BalanceDelta) {
+        bytes memory data = abi.encode(uint8(0), abi.encode(key, params));
         return abi.decode(manager.unlock(data), (BalanceDelta));
     }
 

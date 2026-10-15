@@ -2,6 +2,37 @@
 
 Validated 2026-10-15. This is worker-side evidence for the bounded frontend assignment, not an independent audit or a live deployment attestation.
 
+## Revision round (review findings)
+
+An independent review reopened the accepted work with four reproducible contract findings and five advisory ones. Each was reproduced first; the answers are in `.imd-responses.json` and the rules are documented in `README.md`. What changed:
+
+| Finding | Reproduced with | Fix | Rechecked by |
+| --- | --- | --- | --- |
+| High: oversized `amountSpecified` traded fee-free | Reviewer proof `Proof_32a8dd2b7bec` failed on the starting tree | `src/CrownHook.sol` `beforeSwap`: `AmountTooLarge` on a cut-bearing pool for amounts above `uint128.max`; early return removed from `_crown` | Proof 2/2; `test/CrownRevision.t.sol` oversized tests |
+| High: cut charged on the requested, not filled, amount | Reviewer proof `Proof_e4ce3d9e5119` failed (1 ETH cut on 0.05 ETH; exact-output seller paid ETH) | Transient-slot reservation in `beforeSwap`, `PartialFill` revert in `afterSwap` when the pool's raw currency0 delta differs from the net request; uncharged pools unaffected | Proof 2/2; partial-fill, exact-at-limit and fuzz tests |
+| Medium: beneficiary re-syncing the manager blocked prepaying routers | Reviewer proof `Proof_a6a04375a56a` failed with `CurrencyNotSettled` | `payCrown` snapshots synced currency and reserves and reverts into the claim fallback when either changed | Proof 2/2; two sync-grief tests (prepay ERC-20 router, native-settling router) |
+| Medium: incumbent self-challenge restarted `MIN_REIGN` and held the slot | Reviewer proof `Proof_0d8da1f11423` failed with `ReignTooShort` | `SelfChallenge` for the sitting beneficiary; an undefended flip no longer restarts `reignStartedAt` | Proof 1/1; two new registry tests; three existing tests updated to defend the king where they asserted the restart |
+| Low: genesis front-run on non-atomic deploys | Judged real for owner-opened pools | `TickerTaken` on the derived path when the ticker's king is another token | New test; protected `Hook.protected.t.sol` run with a factory probe and the real token creation code: 4/4 |
+| Low: `balanceOf` probe unguarded | Judged real for ERC-20 currency0 pools | Gas-capped staticcall, unreadable balance takes the claim path | New test with a pausable-`balanceOf` currency0 |
+| Low: zero ticker recorded permanently | Judged real | `ZeroTicker` on the derived path | New test with a `bytes32`-symbol token |
+| Low: claim fallback vs. brief; low: `bytes32` symbols | Confirmed as described | Not changed: requirement conflict and scope limit, documented in the README | Responses file |
+
+Results after the final source change, all run on this worker with the verifier's seed:
+
+| Check | Result |
+| --- | --- |
+| `forge build` | Pass; CrownHook runtime 8,322 bytes / initcode 14,580; CrownRegistry 5,745 / 5,771; tokens unchanged |
+| `FOUNDRY_FUZZ_SEED=0xa908c3…150d forge test` | **80 repository tests passed, 0 failed**, plus the 4 reviewer proofs (7 tests) copied under `test/scratch/`: all pass |
+| `forge fmt --check src test script` | Pass |
+| Protected `univ4_hook/Hook.protected.t.sol` against the new creation code (factory probe, real `CrownToken` creation code, chain 4663) | 4/4 pass, including `test_initializesFromTheLaunchFactory` |
+| `node site/scripts/abis.mjs`; `site/public/abi` vs `dist/abi` | Regenerated from the final artifacts; the four new errors are exported; both copies identical |
+| `npm --prefix site run typecheck` and `run build` | Pass; export 18 files, 834,103 bytes |
+| `IMD_PLAYWRIGHT=… npm --prefix site test` | **49 interaction assertions passed**, export/handoff tests pass, no browser errors |
+| Pinned `taste.mjs --out test/scratch/taste` | **16/16 checks pass**; 390px screenshot inspected: title, one-line explainer, ticker search, king card and the challenge control with its button are on the first screen |
+| Slither | **Not run this round**: Slither is not installed on this worker. The previous round's high-only clean result predates this revision and is not claimed for the new code. |
+
+Frontend changes in this round are small: `SelfChallenge`, `PartialFill`, `AmountTooLarge` and `TickerTaken` are mapped to plain-English messages in `site/src/domain.ts`; the "Crowned at" fact is now "Reign clock since" and the how-it-works copy explains the self-challenge rule, the undefended-flip clock and the partial-fill refusal (`site/src/App.tsx`). `site/tests/interaction.mjs` now takes Playwright's module path from `IMD_PLAYWRIGHT` (the path the design probe documents), falling back to the former worker tool path, because the hardcoded `/opt/imd-tools` location no longer exists on this worker; its finalize mock restarts the reign only for a defended king. `DESIGN.md` is unchanged: no token, type, component or breakpoint changed.
+
 ## Scope and result
 
 **Complete for the frontend delivery scope, with deployment-dependent behavior explicitly unverified.** The Vite/React/TypeScript source, package manifest, lockfile, implementation-derived ABIs and production `dist/` are present. The static export contains 18 files totaling **833,082 bytes**. Required metadata includes the page title, description, favicon, Open Graph title and a local 1200×630 PNG.

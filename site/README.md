@@ -34,7 +34,7 @@ The network shape consumed by the runtime is `name`, `rpcUrls` (array), `explore
 | Control | Contract action | Preconditions / important effect |
 | --- | --- | --- |
 | Register the first king | `CrownRegistry.registerKing` | Unregistered ticker, matching token symbol, nonzero beneficiary |
-| Open challenge | `CrownRegistry.openChallenge` | Distinct matching-symbol token, seven-day reign, no live challenge, expired cooldown; exactly 0.01 ETH |
+| Open challenge | `CrownRegistry.openChallenge` | Distinct matching-symbol token, seven-day reign, no live challenge, expired cooldown, caller is not the sitting beneficiary; exactly 0.01 ETH |
 | Back either side | `CrownRegistry.stake` | Active 72-hour window, strictly positive amount with at most 18 decimals; side 0 or 1 |
 | Finalize challenge | `CrownRegistry.finalize` | Window and 24-hour timelock ended; permissionless |
 | Claim stake refund | `CrownRegistry.claim` | Selected challenge belongs to the ticker and connected wallet has claimable ETH |

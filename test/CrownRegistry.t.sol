@@ -278,13 +278,46 @@ contract CrownRegistryTest is Test {
     function test_newKingMustReignSevenDays() public {
         uint256 id = open();
         stakeAs(alice, id, CrownRegistry.Side.Challenger, 0.05 ether);
+        stakeAs(bob, id, CrownRegistry.Side.King, 0.01 ether); // a defended king: the flip restarts the clock
         finalizeAfterWindow(id);
+        (,, uint64 since) = registry.king(TICKER);
+        assertEq(since, block.timestamp);
         vm.warp(block.timestamp + 7 days - 1);
         vm.prank(alice);
         vm.expectRevert(CrownRegistry.ReignTooShort.selector);
         registry.openChallenge{value: 0.01 ether}(TICKER, address(kingToken));
         vm.warp(block.timestamp + 1);
         vm.prank(alice);
+        registry.openChallenge{value: 0.01 ether}(TICKER, address(kingToken));
+    }
+
+    function test_uncontestedFlip_doesNotRestartTheReignClock() public {
+        (,, uint64 sinceBefore) = registry.king(TICKER);
+        uint256 id = open();
+        stakeAs(alice, id, CrownRegistry.Side.Challenger, 0.04 ether); // nobody defends the king
+        finalizeAfterWindow(id);
+        (address t, address b, uint64 since) = registry.king(TICKER);
+        assertEq(t, address(challengerToken));
+        assertEq(b, challenger);
+        assertEq(since, sinceBefore, "an undefended crown passes with the clock untouched");
+        (,,, uint64 dethrones,,) = registry.tickerTotals(TICKER);
+        assertEq(dethrones, 1);
+        // the new king is challengeable at once: a free flip buys no immunity
+        vm.prank(alice);
+        registry.openChallenge{value: 0.01 ether}(TICKER, address(kingToken));
+    }
+
+    function test_openChallenge_refusesTheSittingBeneficiary() public {
+        vm.warp(block.timestamp + 7 days);
+        vm.deal(kingBeneficiary, 1 ether);
+        vm.prank(kingBeneficiary);
+        vm.expectRevert(CrownRegistry.SelfChallenge.selector);
+        registry.openChallenge{value: 0.01 ether}(TICKER, address(challengerToken));
+        // once dethroned, the former beneficiary may challenge back like anyone else
+        uint256 id = open();
+        stakeAs(alice, id, CrownRegistry.Side.Challenger, 0.04 ether);
+        finalizeAfterWindow(id);
+        vm.prank(kingBeneficiary);
         registry.openChallenge{value: 0.01 ether}(TICKER, address(kingToken));
     }
 

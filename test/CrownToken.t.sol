@@ -38,8 +38,10 @@ contract CrownTokenTest is Test {
         bytes32 ticker = r.tickerOf("CRWN");
         r.registerKing(ticker, address(t), holder);
         vm.warp(block.timestamp + 7 days);
-        vm.deal(holder, 1 ether);
-        vm.prank(holder);
+        // the sitting beneficiary may not challenge its own crown; any other wallet may
+        address rival = makeAddr("rival");
+        vm.deal(rival, 1 ether);
+        vm.prank(rival);
         r.openChallenge{value: 0.01 ether}(ticker, address(c));
     }
 

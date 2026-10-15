@@ -51,7 +51,9 @@ Commands: `forge build`, `forge test`, `forge fmt --check`.
   it. Later calls revert with `AlreadyCrowned`.
 * `openChallenge(ticker, challengerToken)` payable, with exactly `BOND = 0.01 ether`. Conditions:
   * one live challenge per ticker;
-  * the king must have reigned at least `MIN_REIGN = 7 days`;
+  * the caller is not the sitting beneficiary (`SelfChallenge`): the king's own payee cannot occupy the ticker's single
+    challenge slot against everyone else;
+  * the king must have reigned at least `MIN_REIGN = 7 days`, measured from `reignStartedAt`;
   * `FAILED_COOLDOWN = 3 days` must have passed since the last failed challenge on that ticker;
   * the challenger token must differ from the king's token and must report the same ticker.
 
@@ -62,8 +64,11 @@ Commands: `forge build`, `forge test`, `forge fmt --check`.
 * `finalize(challengeId)`: anyone may call it from `stakingEndsAt + TIMELOCK (24 hours)` onward. The challenger wins
   iff `challengerStake > kingStake` **and** `kingStake + challengerStake >= QUORUM (0.05 ether)`. A tie, or a challenge
   below quorum, keeps the king, and the challenger side is then the losing side.
-  * If the challenger wins, the king becomes `{challengerToken, challenger's beneficiary, now}`, and the registry emits
-    `Dethroned` and `Crowned`.
+  * If the challenger wins, the king becomes `{challengerToken, challenger's beneficiary, reignStartedAt}` and the
+    registry emits `Dethroned` and `Crowned`. **`reignStartedAt` restarts (`now`) only when the king side was defended
+    with some stake.** A crown nobody defended passes with the clock untouched, so the new king is challengeable at
+    once: an uncontested challenge with a throwaway same-symbol token (which costs nothing, as the winning side is
+    refunded in full) cannot buy a fresh seven days of immunity. The site labels this timestamp "Reign clock since".
   * If it fails, the cooldown starts and the registry emits `ChallengeFailed`.
 * **Money:** let L be the losing side's total stake and W the winning side's.
   * `slash = L * 20%` (rounded down).
@@ -126,6 +131,11 @@ brief's `afterInitialize` is also the launch's required initialization callback.
   * If a pool is opened without that call (the launch pool), it registers the ticker of its non-ETH token
     (`currency1`) at the default of **100 bps (1%)**.
   * Only the launch factory or the owner may initialize a pool on this hook. Anyone else is refused.
+  * A pool opened without `configurePool` is refused when its token has no readable string `symbol()` (`ZeroTicker`),
+    so no pool can go live with an empty ticker and no cut, and when the derived ticker is already held by a different
+    token (`TickerTaken`), so a pool deployed outside the one-transaction factory path cannot be made to pay a ticker
+    squatter without the owner saying so. The owner can still open either pool by naming the ticker in
+    `configurePool`.
 * **Genesis king:** at initialization, if the registry has no king for the pool's ticker and the pool's token reports
   that ticker, the hook calls `registry.registerKing(ticker, token, owner)`. The launch's CRWN pool therefore crowns
   CRWN, paying `$owner` (the launch payer), in the same transaction that deploys the hook and opens the pool. That
@@ -141,6 +151,16 @@ brief's `afterInitialize` is also the launch's required initialization callback.
   * Exact-input sell: 1% of the ETH output is withheld.
   * Exact-output sell: the pool pays out the requested ETH plus 1%, and the trader receives exactly what they asked
     for.
+* **Full fills only, where the cut is reserved up front.** For the two shapes charged in `beforeSwap` (exact-input
+  buy, exact-output sell) the cut is reserved on the amount the trader specified, which v4 treats only as an upper
+  bound: the pool stops at `sqrtPriceLimitX96` or when range liquidity runs out. `afterSwap` therefore compares the
+  pool's realised currency0 delta with the request net of the cut (exact input) or plus the cut (exact output), and
+  reverts with `PartialFill` when they differ. A trader is never charged a cut on ETH it did not trade, and an
+  exact-output seller can never end up paying ETH. The other two shapes are charged in `afterSwap` from the realised
+  delta and never hit this. A request above `type(uint128).max`, which no pool can ever fill, is refused with
+  `AmountTooLarge` on a pool that charges a cut (it would otherwise trade fee-free up to its price limit). Routers
+  that use the full price range (the Universal Router's default) only see `PartialFill` when the pool's liquidity is
+  exhausted. Pools with no king or 0 bps reserve nothing and let partial fills through unchanged.
 * **Where the ETH goes:** to `registry.beneficiaryOf(ticker)`, the current king's beneficiary. It is paid inside the
   same unlock: `poolManager.take(ETH, beneficiary, cut)` is offset by the hook's returned delta.
   * If the manager's ETH balance cannot cover the cut, or the transfer fails, the hook instead **mints an ERC-6909 ETH
@@ -150,16 +170,22 @@ brief's `afterInitialize` is also the launch's required initialization callback.
   * Nothing is ever held by the hook.
 * `crownPaid[ticker][currency]` is a public, cumulative counter covering both transfers and claims. Each payment emits
   `CrownPaid(ticker, poolId, beneficiary, currency, amount, asClaim)`.
-* **The hook never blocks a swap:**
+* **The hook never blocks a swap for a payment failure:**
   * The registry read is gas-capped and wrapped in try/catch. So is the transfer, which runs through a self-call
-    `payCrown` capped at 100k gas. The claim mint is gas-capped too.
+    `payCrown` capped at 100k gas. The claim mint is gas-capped too, and so is the manager balance probe for an
+    ERC-20 currency0 (a token whose `balanceOf` reverts counts as an empty balance and the cut becomes a claim).
   * If there is no king, the read fails, or both payments fail, the swap goes ahead **without** a cut, and the hook
     emits `CrownSkipped`.
   * The transfer's self-call reverts, undoing the transfer and anything the beneficiary did while receiving it, unless
-    the manager's only new open delta is the hook's own debt for the cut. A beneficiary therefore cannot leave an
-    unsettled delta that would revert the trader's unlock. Tested with a beneficiary that opens a debt and is then
-    paid as a claim.
+    the manager's transient state is unchanged apart from the hook's own debt for the cut: the nonzero-delta count,
+    the synced currency and the synced reserves (`sync` is open to anyone and moves no delta) must all be as they
+    were. A beneficiary therefore cannot leave an unsettled delta, or re-sync the manager under a router that synced
+    and prepaid before the swap, in a way that reverts the trader's unlock. Tested with a beneficiary that opens a
+    debt, one that resets the synced currency under a prepaying router, and one that syncs the token under a router
+    settling native ETH; each is paid as a claim and the swap completes.
   * A beneficiary that rejects ETH or burns gas is paid as a claim instead, and the swap succeeds (tested).
+  * The only swaps the hook refuses are the partial and oversized fills above, which would otherwise charge the trader
+    for ETH it did not trade.
 * **Reentrancy:** all hook logic runs inside the PoolManager's unlock, and every callback checks
   `msg.sender == poolManager`. The only external calls during a swap are the registry read and the beneficiary
   payment, through `take` or `mint`. The hook keeps no balances that could be drained.
@@ -186,7 +212,7 @@ no other powers. It cannot change a live pool's ticker or bps, cannot pause, and
 | Bond / quorum | 0.01 ETH / 0.05 ETH |
 | Min reign / window / timelock / cooldown | 7 days / 72 hours / 24 hours / 3 days |
 | Slash | 20% of the losing side, split 50/50 between the winning stakers and the treasury |
-| Hook gas caps | registry read 30k, transfer 100k, claim mint 60k |
+| Hook gas caps | registry read 30k, transfer 100k, claim mint 60k, ERC-20 balance probe 30k |
 
 Constants are named in source. Deployment and verification are done by IMD's launch pipeline, not by this
 repository's scripts.
@@ -220,7 +246,17 @@ repository's scripts.
 
 * **Who may register:** `registerKing` is permissionless and first-come. For CRWN, the hook registers atomically at
   launch.
-* **Matching symbols:** every king and challenger token must report the ticker's symbol through `symbol()` (a string).
+* **Matching symbols:** every king and challenger token must report the ticker's symbol through `symbol()` as an
+  ABI-encoded `string` of 1 to 64 bytes. A token whose `symbol()` returns `bytes32` (MKR-style), an empty string or a
+  longer string reads as no ticker: it can neither be crowned nor challenge, and a pool on it must be opened with
+  `configurePool`. This is a deliberate scope limit, not a bug: decoding both encodings would let one token claim two
+  readings of the same symbol.
+* **Self-dealing by an incumbent:** the sitting beneficiary cannot open a challenge, and an undefended flip grants no
+  new reign protection. An incumbent can still race `finalize` with a fresh wallet and a throwaway token to re-occupy
+  the challenge slot for another 96 hours at the cost of gas, and a sybil stake on the king side restores the clock
+  restart at the cost of the treasury's half of its 20% slash. Anyone can end such a chain by out-staking the
+  throwaway challenger on the king side, which slashes it and starts the cooldown. A stronger deterrent needs a
+  non-refundable bond or a larger slash, both fixed by the brief, so this is left as a documented residual.
 * **Challenger beneficiary:** the challenger's beneficiary is the wallet that opened the challenge, because the brief's
   `openChallenge(ticker, challengerToken)` has no beneficiary argument.
 * **Bond:** the bond is counted as the challenger's own stake, so it is refunded or slashed like any other stake.
@@ -265,6 +301,15 @@ repository's scripts.
     and that `crownPaid` equals the transfers.
 * `test/CrownToken.t.sol`:
   * the token's supply and transfers; the challenger deploy script; the hook deploy script's salt mining.
+* `test/CrownRevision.t.sol` (review findings):
+  * price-limited partial fills of an exact-input buy and an exact-output sell are refused and nothing is charged; a
+    limit reached exactly at the request is a full fill; oversized requests are refused on a crowned pool and pass on
+    an uncharged one; a fuzz over amounts and limits that a filled buy is charged exactly 1% and a refused one nothing;
+  * a beneficiary that resets or re-targets the manager's synced currency is paid as a claim and both a prepaying
+    router and a native-settling router complete their swap;
+  * an ERC-20 currency0 whose `balanceOf` reverts is paid as a claim instead of blocking the swap;
+  * a pool on a squatted ticker or a token without a string symbol is refused unless configured explicitly;
+  * `test/CrownRegistry.t.sol` adds the self-challenge refusal and the undefended-flip reign clock.
 
 ## Frontend delivery and validation
 

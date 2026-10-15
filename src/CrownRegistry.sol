@@ -110,6 +110,7 @@ contract CrownRegistry {
     error ReignTooShort();
     error CoolingDown();
     error SameToken();
+    error SelfChallenge();
     error UnknownChallenge();
     error StakingClosed();
     error ZeroStake();
@@ -174,10 +175,13 @@ contract CrownRegistry {
 
     /// @notice Challenges the king of `ticker` with `challengerToken`, bonding exactly `BOND`. The bond is the
     /// challenger's opening stake on the challenger side, and `msg.sender` becomes the beneficiary if it wins.
+    /// The sitting beneficiary cannot challenge its own crown: it would only hold the ticker's single challenge
+    /// slot against everyone else.
     function openChallenge(bytes32 ticker, address challengerToken) external payable returns (uint256 challengeId) {
         if (msg.value != BOND) revert WrongBond();
         King storage k = _kings[ticker];
         if (k.token == address(0)) revert NoKing();
+        if (msg.sender == k.beneficiary) revert SelfChallenge();
         TickerTotals storage t = tickerTotals[ticker];
         if (t.activeChallengeId != 0) revert ChallengeLive();
         if (block.timestamp < uint256(k.reignStartedAt) + MIN_REIGN) revert ReignTooShort();
@@ -214,7 +218,9 @@ contract CrownRegistry {
     /// @notice Resolves a challenge after its window and timelock. Anyone may call.
     /// @dev The challenger wins iff its stake exceeds the king's and the total meets QUORUM. The losing side keeps
     /// 80%; of the 20% slash, half goes pro rata to the winning side and half to TREASURY (all of it to TREASURY when
-    /// the winning side has no stake).
+    /// the winning side has no stake). A flip restarts the reign clock (`reignStartedAt`, which gates the next
+    /// challenge by MIN_REIGN) only when the king side was defended with some stake: a crown nobody defended passes
+    /// with the clock untouched, so an uncontested throwaway challenge cannot buy a fresh seven days of immunity.
     function finalize(uint256 challengeId) external nonReentrant {
         Challenge storage c = challenges[challengeId];
         if (c.openedAt == 0) revert UnknownChallenge();
@@ -246,7 +252,7 @@ contract CrownRegistry {
             address oldToken = k.token;
             k.token = c.challengerToken;
             k.beneficiary = c.challengerBeneficiary;
-            k.reignStartedAt = uint64(block.timestamp);
+            if (kingStake != 0) k.reignStartedAt = uint64(block.timestamp);
             t.dethrones += 1;
             emit Dethroned(
                 ticker, challengeId, oldToken, c.challengerToken, c.challengerBeneficiary, kingStake, challengerStake

@@ -22,7 +22,11 @@ import {Ticker} from "./libraries/Ticker.sol";
 /// specified side (beforeSwap + beforeSwapReturnDelta), otherwise from the unspecified side (afterSwap +
 /// afterSwapReturnDelta). It is paid with `poolManager.take` to the beneficiary when the manager holds enough of the
 /// currency, otherwise (or if the transfer fails) as an ERC-6909 claim minted straight to the beneficiary. If the
-/// registry read or both payments fail, the swap proceeds without a cut: the hook never reverts a swap.
+/// registry read or both payments fail, the swap proceeds without a cut: the hook never reverts a swap for a payment
+/// failure. A cut reserved in beforeSwap is charged on the amount the swapper specified, which v4 only treats as an
+/// upper bound: afterSwap therefore checks that the pool filled that request in full and refuses a partial fill
+/// (`PartialFill`), so a swapper is never charged for more than it traded. Shapes charged in afterSwap use the
+/// realised delta and are never affected.
 contract CrownHook is IHooks, IUnlockCallback {
     using TransientStateLibrary for IPoolManager;
 
@@ -39,6 +43,10 @@ contract CrownHook is IHooks, IUnlockCallback {
     uint256 internal constant REGISTRY_GAS = 30_000;
     uint256 internal constant TRANSFER_GAS = 100_000;
     uint256 internal constant MINT_GAS = 60_000;
+    uint256 internal constant BALANCE_GAS = 30_000;
+    /// @dev Transient slot holding, between beforeSwap and afterSwap, the currency0 amount the pool has to fill for
+    /// the cut reserved in beforeSwap to be the right one. Zero when nothing was reserved.
+    bytes32 internal constant EXPECTED_FILL_SLOT = keccak256("CrownHook.expectedFill");
 
     IPoolManager public immutable poolManager;
     /// @notice The registry this hook pays from, created with the hook so it exists before any pool can open.
@@ -76,6 +84,13 @@ contract CrownHook is IHooks, IUnlockCallback {
     error PoolAlreadyLive();
     error ZeroTicker();
     error DeltaMismatch();
+    /// @notice The pool's ticker is already held by a different token: opening this pool without `configurePool`
+    /// would pay a squatter. Configure the pool explicitly, or challenge for the ticker first.
+    error TickerTaken();
+    /// @notice The specified amount exceeds what a v4 pool can ever fill, so no cut on it could be right.
+    error AmountTooLarge();
+    /// @notice The pool filled less than the specified amount the cut was reserved on (price limit or liquidity).
+    error PartialFill();
 
     modifier onlyPoolManager() {
         if (msg.sender != address(poolManager)) revert NotPoolManager();
@@ -137,13 +152,24 @@ contract CrownHook is IHooks, IUnlockCallback {
         PoolId id = key.toId();
         PoolConfig memory cfg = pendingConfig[id];
         address token = Currency.unwrap(key.currency1);
-        if (!cfg.set) cfg = PoolConfig(Ticker.ofToken(token), DEFAULT_BPS, true);
+        bool derived = !cfg.set;
+        if (derived) {
+            cfg = PoolConfig(Ticker.ofToken(token), DEFAULT_BPS, true);
+            // A pool whose token has no readable string symbol would be live for ever with no ticker and no cut.
+            if (cfg.ticker == bytes32(0)) revert ZeroTicker();
+        }
         delete pendingConfig[id];
         poolConfig[id] = cfg;
 
         // Genesis: the pool's own token is crowned for its ticker, paying the owner, if nobody holds it yet.
         if (cfg.ticker != bytes32(0) && registry.beneficiaryOf(cfg.ticker) == address(0)) {
             try registry.registerKing(cfg.ticker, token, owner) {} catch {}
+        }
+        // A pool opened on its token's own ticker without explicit configuration must be that ticker's king: when the
+        // ticker was registered first by someone else, the pool would pay the squatter from its first swap.
+        if (derived) {
+            (address kingToken,,) = registry.king(cfg.ticker);
+            if (kingToken != token) revert TickerTaken();
         }
         emit PoolRegistered(id, cfg.ticker, cfg.bps);
         return IHooks.afterInitialize.selector;
@@ -160,7 +186,17 @@ contract CrownHook is IHooks, IUnlockCallback {
             return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
         }
         uint256 amount = exactInput ? uint256(-params.amountSpecified) : uint256(params.amountSpecified);
+        if (amount > type(uint128).max) {
+            // The pool can never fill such a request; it is only bounded by the price limit. Refuse it when this
+            // pool charges a cut, so an oversized request is not a fee-free trade.
+            PoolConfig memory cfg = poolConfig[key.toId()];
+            if (cfg.ticker != bytes32(0) && cfg.bps != 0) revert AmountTooLarge();
+            return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
+        }
         uint256 paid = _crown(key, amount);
+        // The pool is asked for the request net of the cut (exact input) or plus the cut (exact output); afterSwap
+        // checks it filled exactly that, so the cut reserved here is the cut on what was actually traded.
+        if (paid != 0) _setExpectedFill(exactInput ? amount - paid : amount + paid);
         return (IHooks.beforeSwap.selector, toBeforeSwapDelta(int128(int256(paid)), 0), 0);
     }
 
@@ -170,22 +206,27 @@ contract CrownHook is IHooks, IUnlockCallback {
         returns (bytes4, int128)
     {
         bool exactInput = params.amountSpecified < 0;
-        // Handled in beforeSwap when currency0 was the specified side.
-        if (params.zeroForOne == exactInput) return (IHooks.afterSwap.selector, 0);
         int128 amount0 = delta.amount0();
         uint256 amount = amount0 < 0 ? uint256(-int256(amount0)) : uint256(int256(amount0));
+        if (params.zeroForOne == exactInput) {
+            // Charged in beforeSwap on the specified amount: the pool must have filled it in full.
+            uint256 expected = _takeExpectedFill();
+            if (expected != 0 && amount != expected) revert PartialFill();
+            return (IHooks.afterSwap.selector, 0);
+        }
         uint256 paid = _crown(key, amount);
         return (IHooks.afterSwap.selector, int128(int256(paid)));
     }
 
     // ------------------------------------------------------------------ payment
 
-    /// @dev Computes the cut on `amount` of currency0 and pays it to the king. Returns what was paid, which the
-    /// caller reports as the hook's delta: the payment left the hook owing exactly that, so the books balance.
+    /// @dev Computes the cut on `amount` of currency0 (at most uint128.max, so the cut fits an int128) and pays it to
+    /// the king. Returns what was paid, which the caller reports as the hook's delta: the payment left the hook owing
+    /// exactly that, so the books balance.
     function _crown(PoolKey calldata key, uint256 amount) internal returns (uint256) {
         PoolId id = key.toId();
         PoolConfig memory cfg = poolConfig[id];
-        if (cfg.ticker == bytes32(0) || cfg.bps == 0 || amount > type(uint128).max) return 0;
+        if (cfg.ticker == bytes32(0) || cfg.bps == 0) return 0;
         uint256 cut = amount * cfg.bps / BPS;
         if (cut == 0) return 0;
 
@@ -201,7 +242,7 @@ contract CrownHook is IHooks, IUnlockCallback {
         Currency currency = key.currency0;
         bool asClaim;
         bool paid;
-        if (currency.balanceOf(address(poolManager)) >= cut) {
+        if (_managerHolds(currency, cut)) {
             try this.payCrown{gas: TRANSFER_GAS}(currency, beneficiary, cut) {
                 paid = true;
             } catch {}
@@ -221,19 +262,49 @@ contract CrownHook is IHooks, IUnlockCallback {
         return cut;
     }
 
+    /// @dev Whether the manager holds at least `amount` of `currency`, read without letting a token that reverts on
+    /// `balanceOf` revert the swap: an unreadable balance counts as too small, and the cut becomes a claim.
+    function _managerHolds(Currency currency, uint256 amount) internal view returns (bool) {
+        if (currency.isAddressZero()) return address(poolManager).balance >= amount;
+        (bool ok, bytes memory data) = Currency.unwrap(currency).staticcall{gas: BALANCE_GAS}(
+            abi.encodeWithSignature("balanceOf(address)", address(poolManager))
+        );
+        return ok && data.length >= 32 && abi.decode(data, (uint256)) >= amount;
+    }
+
     /// @notice Transfers the cut to the beneficiary through the PoolManager. Callable only by this hook.
     /// @dev Reverts, undoing the transfer and anything the beneficiary did while receiving it, unless the only change
-    /// to the manager's open deltas is this hook's debt for the cut. A beneficiary that leaves an unsettled delta
-    /// would otherwise make the swapper's whole unlock revert.
+    /// to the manager's transient state is this hook's debt for the cut: the open deltas, the synced currency and its
+    /// reserves must all be as they were. A beneficiary that leaves an unsettled delta, or re-syncs the manager
+    /// under a router that synced before the swap, would otherwise make the swapper's whole unlock revert.
     function payCrown(Currency currency, address to, uint256 amount) external {
         if (msg.sender != address(this)) revert NotSelf();
         if (poolManager.currencyDelta(address(this), currency) != 0) revert DeltaMismatch();
         uint256 countBefore = poolManager.getNonzeroDeltaCount();
+        Currency syncedBefore = poolManager.getSyncedCurrency();
+        uint256 reservesBefore = poolManager.getSyncedReserves();
         poolManager.take(currency, to, amount);
         if (
             poolManager.getNonzeroDeltaCount() != countBefore + 1
                 || poolManager.currencyDelta(address(this), currency) != -int256(amount)
+                || !(poolManager.getSyncedCurrency() == syncedBefore)
+                || poolManager.getSyncedReserves() != reservesBefore
         ) revert DeltaMismatch();
+    }
+
+    function _setExpectedFill(uint256 amount) internal {
+        bytes32 slot = EXPECTED_FILL_SLOT;
+        assembly ("memory-safe") {
+            tstore(slot, amount)
+        }
+    }
+
+    function _takeExpectedFill() internal returns (uint256 amount) {
+        bytes32 slot = EXPECTED_FILL_SLOT;
+        assembly ("memory-safe") {
+            amount := tload(slot)
+            tstore(slot, 0)
+        }
     }
 
     /// @notice Redeems `amount` of the caller's ERC-6909 claims on `currency` (minted when a cut could not be
