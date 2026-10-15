@@ -38,11 +38,11 @@ export function useCrown(runtime: Runtime, symbol: string, lookup?: bigint) {
       const block = await client.getBlock();
       const ticker = tickerHash(symbol);
       const read = (functionName: string, args: readonly unknown[] = []) => client.readContract({ address: bound.registry, abi: runtime.abis.CrownRegistry, functionName, args, blockNumber: block.number });
-      const [king, totals, paid, treasuryOwed, count] = await Promise.all([
-        read('king', [ticker]), read('tickerTotals', [ticker]),
+      const [king, challengeableAt, totals, paid, treasuryOwed, count] = await Promise.all([
+        read('king', [ticker]), read('challengeableAt', [ticker]), read('tickerTotals', [ticker]),
         client.readContract({ address: bound.hook, abi: runtime.abis.CrownHook, functionName: 'crownPaid', args: [ticker, ZERO], blockNumber: block.number }),
         read('treasuryOwed'), read('challengeCount'),
-      ]) as [King, Totals, bigint, bigint, bigint];
+      ]) as [King, bigint, Totals, bigint, bigint, bigint];
       const selectedId = lookup ?? totals[0];
       const active = totals[0] > 0n ? await read('challenges', [totals[0]]) as Challenge : undefined;
       const selected = selectedId === totals[0] ? active : selectedId > 0n ? await read('challenges', [selectedId]) as Challenge : undefined;
@@ -60,7 +60,7 @@ export function useCrown(runtime: Runtime, symbol: string, lookup?: bigint) {
           ]) as [bigint, bigint, bigint];
         }
       }
-      return { king, totals, paid, active, selected, selectedId, treasuryOwed, count, ownKing, ownChallenger, claimable, feeClaims, operator, balance,
+      return { king, challengeableAt, totals, paid, active, selected, selectedId, treasuryOwed, count, ownKing, ownChallenger, claimable, feeClaims, operator, balance,
         block: block.number, time: Number(block.timestamp), observedAt: Date.now() };
     },
   });

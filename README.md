@@ -53,7 +53,9 @@ Commands: `forge build`, `forge test`, `forge fmt --check`.
   * one live challenge per ticker;
   * the caller is not the sitting beneficiary (`SelfChallenge`): the king's own payee cannot occupy the ticker's single
     challenge slot against everyone else;
-  * the king must have reigned at least `MIN_REIGN = 7 days`, measured from `reignStartedAt`;
+  * the crown's protection must have lapsed: `challengeableAt(ticker)` is `MIN_REIGN = 7 days` after registration,
+    and after a dethroning it moves seven days ahead only when the old king was defended with at least
+    `MIN_DEFENCE` (see `finalize`);
   * `FAILED_COOLDOWN = 3 days` must have passed since the last failed challenge on that ticker;
   * the challenger token must differ from the king's token and must report the same ticker.
 
@@ -64,11 +66,15 @@ Commands: `forge build`, `forge test`, `forge fmt --check`.
 * `finalize(challengeId)`: anyone may call it from `stakingEndsAt + TIMELOCK (24 hours)` onward. The challenger wins
   iff `challengerStake > kingStake` **and** `kingStake + challengerStake >= QUORUM (0.05 ether)`. A tie, or a challenge
   below quorum, keeps the king, and the challenger side is then the losing side.
-  * If the challenger wins, the king becomes `{challengerToken, challenger's beneficiary, reignStartedAt}` and the
-    registry emits `Dethroned` and `Crowned`. **`reignStartedAt` restarts (`now`) only when the king side was defended
-    with some stake.** A crown nobody defended passes with the clock untouched, so the new king is challengeable at
-    once: an uncontested challenge with a throwaway same-symbol token (which costs nothing, as the winning side is
-    refunded in full) cannot buy a fresh seven days of immunity. The site labels this timestamp "Reign clock since".
+  * If the challenger wins, the king becomes `{challengerToken, challenger's beneficiary, reignStartedAt = now}` and
+    the registry emits `Dethroned` and `Crowned`. **The new king's protection, `challengeableAt`, moves to
+    `now + MIN_REIGN` only when the king side was defended with at least `MIN_DEFENCE = BOND = 0.01 ether`.** A crown
+    nobody defended, or one defended with less, passes with its protection untouched, so the new king is challengeable
+    at once: an uncontested or dust-defended challenge with a throwaway same-symbol token (which costs nothing, as the
+    winning side is refunded in full and a slash below five wei rounds to zero) cannot buy a fresh seven days of
+    immunity. A defence of `MIN_DEFENCE` that loses is slashed 20%, half of it to the treasury, so seven days of
+    protection always cost the losing defenders at least 0.001 ETH that leaves their hands. The site labels
+    `reignStartedAt` "Reign clock since" and `challengeableAt` "Challenge opens".
   * If it fails, the cooldown starts and the registry emits `ChallengeFailed`.
 * **Money:** let L be the losing side's total stake and W the winning side's.
   * `slash = L * 20%` (rounded down).
@@ -84,7 +90,8 @@ Commands: `forge build`, `forge test`, `forge fmt --check`.
   and anyone can retry it with `payTreasury()`. The treasury can never block a resolution.
 * **Public per-ticker totals:** `tickerTotals(ticker)` returns `activeChallengeId`, `cooldownUntil`, `challenges`,
   `dethrones`, `totalStaked` and `totalSlashed`. `challenges(id)` returns the full challenge state, including both
-  stakes and all timestamps.
+  stakes and all timestamps. `king(ticker)` returns `{kingToken, beneficiary, reignStartedAt}` and
+  `challengeableAt(ticker)` the earliest time its next challenge may open (the cooldown is separate).
 * **Events:** `Crowned`, `ChallengeOpened`, `Staked`, `Dethroned`, `ChallengeFailed`, `Slashed`, `Claimed`,
   `TreasuryPaid`.
 * **No admin:** there are no owner or setter functions. The constructor takes no parameters, and every value above is
@@ -211,6 +218,7 @@ no other powers. It cannot change a live pool's ticker or bps, cannot pause, and
 | Treasury | `0xf19F11Dee16a341671E6Ed3e209b704C1Bbc3E57` (constant in the registry) |
 | Bond / quorum | 0.01 ETH / 0.05 ETH |
 | Min reign / window / timelock / cooldown | 7 days / 72 hours / 24 hours / 3 days |
+| Min defence for a dethroning to grant a new 7-day protection | 0.01 ETH (`MIN_DEFENCE = BOND`) |
 | Slash | 20% of the losing side, split 50/50 between the winning stakers and the treasury |
 | Hook gas caps | registry read 30k, transfer 100k, claim mint 60k, ERC-20 balance probe 30k |
 
@@ -251,12 +259,16 @@ repository's scripts.
   longer string reads as no ticker: it can neither be crowned nor challenge, and a pool on it must be opened with
   `configurePool`. This is a deliberate scope limit, not a bug: decoding both encodings would let one token claim two
   readings of the same symbol.
-* **Self-dealing by an incumbent:** the sitting beneficiary cannot open a challenge, and an undefended flip grants no
-  new reign protection. An incumbent can still race `finalize` with a fresh wallet and a throwaway token to re-occupy
-  the challenge slot for another 96 hours at the cost of gas, and a sybil stake on the king side restores the clock
-  restart at the cost of the treasury's half of its 20% slash. Anyone can end such a chain by out-staking the
-  throwaway challenger on the king side, which slashes it and starts the cooldown. A stronger deterrent needs a
-  non-refundable bond or a larger slash, both fixed by the brief, so this is left as a documented residual.
+* **Self-dealing by an incumbent:** the sitting beneficiary cannot open a challenge, and a flip whose king side was
+  defended with less than `MIN_DEFENCE` (0.01 ETH) grants no new protection: the incumbent can move its crown between
+  its own wallets through a second wallet and a one-wei "defence", but `challengeableAt` does not move, so an outsider
+  can challenge the moment that throwaway challenge ends. Buying seven days of protection needs a king-side stake of
+  at least `MIN_DEFENCE` that loses, which forfeits 20% of it: half back to the (possibly sybil) winners and half,
+  0.001 ETH per cycle at the minimum, to the treasury. An incumbent can still race `finalize` with a fresh wallet and
+  a throwaway token to re-occupy the challenge slot for another 96 hours at the cost of gas. Anyone can end such a
+  chain by out-staking the throwaway challenger on the king side, which slashes it and starts the cooldown. A stronger
+  deterrent needs a non-refundable bond or a larger slash, both fixed by the brief, so the 0.001 ETH floor and the
+  slot race are left as documented residuals.
 * **Challenger beneficiary:** the challenger's beneficiary is the wallet that opened the challenge, because the brief's
   `openChallenge(ticker, challengerToken)` has no beneficiary argument.
 * **Bond:** the bond is counted as the challenger's own stake, so it is refunded or slashed like any other stake.
@@ -309,7 +321,9 @@ repository's scripts.
     router and a native-settling router complete their swap;
   * an ERC-20 currency0 whose `balanceOf` reverts is paid as a claim instead of blocking the swap;
   * a pool on a squatted ticker or a token without a string symbol is refused unless configured explicitly;
-  * `test/CrownRegistry.t.sol` adds the self-challenge refusal and the undefended-flip reign clock.
+  * `test/CrownRegistry.t.sol` adds the self-challenge refusal, the registration protection window, the undefended
+    and dust-defended flips that grant no new protection, the `MIN_DEFENCE` boundary with its slash, and the sybil
+    self-challenge from a second wallet with a one-wei defence.
 
 ## Frontend delivery and validation
 

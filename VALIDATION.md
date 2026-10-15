@@ -2,6 +2,34 @@
 
 Validated 2026-10-15. This is worker-side evidence for the bounded frontend assignment, not an independent audit or a live deployment attestation.
 
+## Second revision round (re-raised self-challenge finding)
+
+The review re-raised the self-challenge finding: the sitting beneficiary's own second wallet could open a throwaway challenge, defend the king side with one wei (whose 20% slash rounds to zero) and, because `finalize` restarted the reign for any nonzero king stake, buy seven days of `ReignTooShort` for free. Reproduced first: the reviewer's proof `Proof_641d732fd538` failed on the starting tree with `ReignTooShort()`. The proof also asserts that `reignStartedAt` restarts on the flip, so the fix separates the two meanings the one timestamp had carried.
+
+| What | Change |
+| --- | --- |
+| `src/CrownRegistry.sol` | `King` gains `challengeableAt`, read by `challengeableAt(ticker)`; `registerKing` sets it `MIN_REIGN` ahead; `openChallenge` gates on it instead of `reignStartedAt + MIN_REIGN`; a flip always restarts `reignStartedAt` but moves `challengeableAt` only when `kingStake >= MIN_DEFENCE` (`= BOND`, 0.01 ETH), so a protection-buying defence always loses at least 0.001 ETH to the treasury |
+| `test/CrownRegistry.t.sol` | Registration protection; undefended flip and `MIN_DEFENCE - 1` flip grant no protection; `MIN_DEFENCE` flip grants it and is slashed 0.008/0.001 exactly; the reviewer's sybil scenario (second wallet, one-wei defence, zero cost) followed by an honest challenge that opens |
+| `site/src/useCrown.ts`, `domain.ts`, `App.tsx` | The page reads `challengeableAt` and derives "Challenge opens", the eligibility gate and the countdown from it rather than from `reignStartedAt + 7 days`; the how-it-works note states the 0.01 ETH defence rule |
+| `site/tests/interaction.mjs` | The mock serves `challengeableAt` and its finalize restarts the reign always, the protection only for a defence of at least 0.01 ETH |
+| `site/public/abi`, `dist/abi` | `CrownRegistry.json` regenerated from the final artifact (new `MIN_DEFENCE` and `challengeableAt` views) |
+
+Results after the final source change, all on this worker:
+
+| Check | Result |
+| --- | --- |
+| Reviewer proof `Proof_641d732fd538` copied under `test/scratch/` | Failed on the starting tree (`ReignTooShort()`), **passes** on the result |
+| `forge build` | Pass; CrownRegistry runtime 5,952 bytes / initcode 5,978; CrownHook 8,322 / 14,787 (it embeds the registry's creation code) |
+| `FOUNDRY_FUZZ_SEED=0xa908c3…150d forge test` | **85 repository tests passed, 0 failed** |
+| Protected `univ4_hook` suites against the new hook creation code (manager built in place, factory probe, real `CrownToken` creation code, native pair, chain 4663, fee 12500 / spacing 60) | Hook 4/4, Owners 2/2, Token 5/5 with the two manifest-dependent token tests skipped as before |
+| `forge fmt --check src test script` | Pass |
+| `node site/scripts/abis.mjs`, `npm --prefix site run typecheck`, `run build` | Pass; export 18 files, 834,572 bytes |
+| `IMD_PLAYWRIGHT=$HOME/.imd-taste/… npm --prefix site test` | **49 interaction assertions passed**, export/handoff test passes, no browser errors |
+| Pinned `taste.mjs --out test/scratch/taste` | **16/16 checks pass**; the 390px screenshot was inspected again: title, one-line explainer, ticker search, king card and the challenge control with its button are on the first screen |
+| Slither | Not run: not installed on this worker |
+
+Not verified live: no transaction was broadcast; the new gate was exercised only in Foundry and against the mocked RPC. `DESIGN.md` is unchanged: no token, type, component or breakpoint changed, only one sentence of copy.
+
 ## Revision round (review findings)
 
 An independent review reopened the accepted work with four reproducible contract findings and five advisory ones. Each was reproduced first; the answers are in `.imd-responses.json` and the rules are documented in `README.md`. What changed:
@@ -31,7 +59,7 @@ Results after the final source change, all run on this worker with the verifier'
 | Pinned `taste.mjs --out test/scratch/taste` | **16/16 checks pass**; 390px screenshot inspected: title, one-line explainer, ticker search, king card and the challenge control with its button are on the first screen |
 | Slither | **Not run this round**: Slither is not installed on this worker. The previous round's high-only clean result predates this revision and is not claimed for the new code. |
 
-Frontend changes in this round are small: `SelfChallenge`, `PartialFill`, `AmountTooLarge` and `TickerTaken` are mapped to plain-English messages in `site/src/domain.ts`; the "Crowned at" fact is now "Reign clock since" and the how-it-works copy explains the self-challenge rule, the undefended-flip clock and the partial-fill refusal (`site/src/App.tsx`). `site/tests/interaction.mjs` now takes Playwright's module path from `IMD_PLAYWRIGHT` (the path the design probe documents), falling back to the former worker tool path, because the hardcoded `/opt/imd-tools` location no longer exists on this worker; its finalize mock restarts the reign only for a defended king. `DESIGN.md` is unchanged: no token, type, component or breakpoint changed.
+Frontend changes in this round are small: `SelfChallenge`, `PartialFill`, `AmountTooLarge` and `TickerTaken` are mapped to plain-English messages in `site/src/domain.ts`; the "Crowned at" fact is now "Reign clock since" and the how-it-works copy explains the self-challenge rule, the undefended-flip clock and the partial-fill refusal (`site/src/App.tsx`). `site/tests/interaction.mjs` now takes Playwright's module path from `IMD_PLAYWRIGHT` (the path the design probe documents), falling back to the former worker tool path, because the hardcoded `/opt/imd-tools` location no longer exists on this worker; its finalize mock restarted the reign only for a defended king (superseded by the second round above). `DESIGN.md` is unchanged: no token, type, component or breakpoint changed.
 
 ## Scope and result
 

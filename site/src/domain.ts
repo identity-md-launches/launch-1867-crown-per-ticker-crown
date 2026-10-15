@@ -39,7 +39,8 @@ export function remaining(until: number, now: number) {
   const days = Math.floor(seconds / 86400), hours = Math.floor(seconds % 86400 / 3600), minutes = Math.floor(seconds % 3600 / 60);
   return days ? `${days}d ${hours}h` : hours ? `${hours}h ${minutes}m` : `${minutes}m ${seconds % 60}s`;
 }
-export function opensAt(king: King, totals: Totals) { return Math.max(Number(king[2]) + RULES.minReign, Number(totals[1])); }
+// The registry's own gate: challengeableAt (seven days after registration or a defended dethroning) or the cooldown.
+export function opensAt(challengeableAt: number | bigint, totals: Totals) { return Math.max(Number(challengeableAt), Number(totals[1])); }
 export const date = (time: number) => new Intl.DateTimeFormat('en', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }).format(Number(time) * 1000) + ' UTC';
 const errors: Record<string, string> = {
   AlreadyCrowned: 'This ticker already has a king. Refresh to see it.', NoKing: 'Register a king before opening a challenge.',

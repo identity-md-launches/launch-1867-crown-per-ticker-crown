@@ -74,10 +74,10 @@ The root README records the pinned Solidity settings. A deployment handoff with 
 ## Validation
 
 ```sh
-PLAYWRIGHT_BROWSERS_PATH=/opt/imd-tools/ms-playwright npm --prefix site test
-IMD_PLAYWRIGHT=/opt/imd-tools/playwright-mcp/node_modules/playwright/index.mjs PLAYWRIGHT_BROWSERS_PATH=/opt/imd-tools/ms-playwright node .imd/reads/skills/design-critic/scripts/taste.mjs --out test/scratch/taste
+IMD_PLAYWRIGHT="$HOME/.imd-taste/node_modules/playwright/index.mjs" npm --prefix site test
+IMD_PLAYWRIGHT="$HOME/.imd-taste/node_modules/playwright/index.mjs" node .imd/reads/skills/design-critic/scripts/taste.mjs --out test/scratch/taste
 ```
 
-The provided worker browser runtime is used for those commands. On another development machine, adjust the Playwright import to an installed copy and use its browser installation. Tests serve the production export themselves, use mocked RPC/EIP-6963 providers, and close the server and browser when done. They do not transmit transactions. Screenshots and fixture files are written only to `test/scratch/` and are not delivered.
+`IMD_PLAYWRIGHT` names a Playwright module installed outside the repository, at the location the design probe itself documents (`npm install --prefix "$HOME/.imd-taste" playwright@1`, then `playwright install chromium`); both scripts fall back to any Playwright they can resolve. On another development machine, adjust the Playwright import to an installed copy and use its browser installation. Tests serve the production export themselves, use mocked RPC/EIP-6963 providers, and close the server and browser when done. They do not transmit transactions. Screenshots and fixture files are written only to `test/scratch/` and are not delivered.
 
 See `../VALIDATION.md` for executed commands, results and untested live behavior, `../DESIGN.md` for the implemented design system, and `../REVIEW.md` for the limited treasury payout change and static-analysis dispositions. The optional social asset generator is `scripts/social.mjs`; its code-native SVG source is `design/social.svg`. The delivered PNG needs no runtime renderer.

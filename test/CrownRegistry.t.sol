@@ -291,18 +291,89 @@ contract CrownRegistryTest is Test {
         registry.openChallenge{value: 0.01 ether}(TICKER, address(kingToken));
     }
 
-    function test_uncontestedFlip_doesNotRestartTheReignClock() public {
-        (,, uint64 sinceBefore) = registry.king(TICKER);
+    function test_registerKing_setsReignAndProtection() public {
+        (,, uint64 since) = registry.king(TICKER);
+        assertEq(since, 1_000_000);
+        assertEq(registry.challengeableAt(TICKER), 1_000_000 + 7 days);
+        assertEq(registry.challengeableAt(keccak256("NONE")), 0);
+    }
+
+    function test_uncontestedFlip_grantsNoNewProtection() public {
+        uint64 protectedUntil = registry.challengeableAt(TICKER);
         uint256 id = open();
         stakeAs(alice, id, CrownRegistry.Side.Challenger, 0.04 ether); // nobody defends the king
         finalizeAfterWindow(id);
         (address t, address b, uint64 since) = registry.king(TICKER);
         assertEq(t, address(challengerToken));
         assertEq(b, challenger);
-        assertEq(since, sinceBefore, "an undefended crown passes with the clock untouched");
+        assertEq(since, block.timestamp, "the new reign starts now");
+        assertEq(registry.challengeableAt(TICKER), protectedUntil, "an undefended crown passes with no new protection");
         (,,, uint64 dethrones,,) = registry.tickerTotals(TICKER);
         assertEq(dethrones, 1);
         // the new king is challengeable at once: a free flip buys no immunity
+        vm.prank(alice);
+        registry.openChallenge{value: 0.01 ether}(TICKER, address(kingToken));
+    }
+
+    function test_dustDefence_grantsNoNewProtection() public {
+        uint64 protectedUntil = registry.challengeableAt(TICKER);
+        uint256 id = open();
+        stakeAs(alice, id, CrownRegistry.Side.Challenger, 0.04 ether);
+        stakeAs(bob, id, CrownRegistry.Side.King, registry.MIN_DEFENCE() - 1); // one wei short of a defence
+        finalizeAfterWindow(id);
+        (address t,, uint64 since) = registry.king(TICKER);
+        assertEq(t, address(challengerToken));
+        assertEq(since, block.timestamp);
+        assertEq(registry.challengeableAt(TICKER), protectedUntil, "less than MIN_DEFENCE buys no protection");
+        vm.prank(alice);
+        registry.openChallenge{value: 0.01 ether}(TICKER, address(kingToken));
+    }
+
+    function test_minDefence_grantsProtection_andForfeitsASlash() public {
+        uint256 id = open();
+        stakeAs(alice, id, CrownRegistry.Side.Challenger, 0.04 ether);
+        stakeAs(bob, id, CrownRegistry.Side.King, registry.MIN_DEFENCE());
+        finalizeAfterWindow(id);
+        (,, uint64 since) = registry.king(TICKER);
+        assertEq(since, block.timestamp);
+        assertEq(registry.challengeableAt(TICKER), block.timestamp + 7 days, "a defence of MIN_DEFENCE protects");
+        // the defence is slashed 20%: half to the winners, half to the treasury, so protection is never free
+        assertEq(claimAs(bob, id), 0.008 ether);
+        assertEq(TREASURY.balance, 0.001 ether);
+        vm.prank(alice);
+        vm.expectRevert(CrownRegistry.ReignTooShort.selector);
+        registry.openChallenge{value: 0.01 ether}(TICKER, address(kingToken));
+    }
+
+    /// @dev The incumbent opens from a second wallet (SelfChallenge only knows the sitting beneficiary) and defends
+    /// with one wei so that the slash rounds to zero. The crown moves between its wallets and the reign clock
+    /// restarts, but the protection does not, and an outsider can challenge the moment the throwaway challenge is
+    /// over.
+    function test_sybilSelfChallenge_withDustDefence_buysNoImmunity() public {
+        address incumbentAlt = makeAddr("incumbentAlt");
+        MockERC20 shadow = new MockERC20("Crown Demo", "CRWN", 1);
+        vm.deal(incumbentAlt, 1 ether);
+        vm.deal(kingBeneficiary, 1 ether);
+        uint64 protectedUntil = registry.challengeableAt(TICKER);
+        uint256 before = kingBeneficiary.balance + incumbentAlt.balance;
+
+        vm.warp(block.timestamp + 7 days);
+        vm.prank(incumbentAlt);
+        uint256 id = registry.openChallenge{value: 0.01 ether}(TICKER, address(shadow));
+        stakeAs(incumbentAlt, id, CrownRegistry.Side.Challenger, 0.04 ether);
+        stakeAs(kingBeneficiary, id, CrownRegistry.Side.King, 1);
+        finalizeAfterWindow(id);
+
+        (address t, address b, uint64 since) = registry.king(TICKER);
+        assertEq(t, address(shadow));
+        assertEq(b, incumbentAlt);
+        assertEq(since, block.timestamp, "the reign clock restarts");
+        assertEq(registry.challengeableAt(TICKER), protectedUntil, "a one-wei defence buys no protection");
+        claimAs(incumbentAlt, id);
+        claimAs(kingBeneficiary, id);
+        assertEq(kingBeneficiary.balance + incumbentAlt.balance, before, "the dust defence cost nothing but gas");
+
+        // ...and bought nothing: an honest challenger is not refused ReignTooShort
         vm.prank(alice);
         registry.openChallenge{value: 0.01 ether}(TICKER, address(kingToken));
     }

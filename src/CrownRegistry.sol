@@ -20,6 +20,9 @@ contract CrownRegistry {
         address token;
         address beneficiary;
         uint64 reignStartedAt;
+        // When the crown may next be challenged. Registration and a defended flip set it MIN_REIGN ahead; a flip that
+        // the king side did not defend with at least MIN_DEFENCE leaves it untouched.
+        uint64 challengeableAt;
     }
 
     struct Challenge {
@@ -57,6 +60,11 @@ contract CrownRegistry {
     uint256 public constant FAILED_COOLDOWN = 3 days;
     uint256 public constant SLASH_BPS = 2_000; // 20% of the losing side
     uint256 public constant BPS = 10_000;
+    /// @notice The king-side stake a challenge needs before a flip grants the new king MIN_REIGN of protection: the
+    /// king must have been defended with at least what the challenger bonded. Below it the slash rounds towards
+    /// nothing, so an incumbent could re-crown itself through a second wallet for free; at it, every such cycle
+    /// forfeits the treasury's half of the defence's 20% slash.
+    uint256 public constant MIN_DEFENCE = BOND;
     address public constant TREASURY = 0xf19F11Dee16a341671E6Ed3e209b704C1Bbc3E57;
 
     mapping(bytes32 ticker => King) internal _kings;
@@ -147,6 +155,12 @@ contract CrownRegistry {
         return _kings[ticker].beneficiary;
     }
 
+    /// @notice The earliest time a challenge may be opened against the king of `ticker` (the cooldown after a failed
+    /// challenge is separate, in `tickerTotals`). Zero when the ticker has never been registered.
+    function challengeableAt(bytes32 ticker) external view returns (uint64) {
+        return _kings[ticker].challengeableAt;
+    }
+
     function stakeOf(uint256 challengeId, address staker, Side side) external view returns (uint256) {
         return _stakes[challengeId][staker][uint256(side)];
     }
@@ -169,7 +183,7 @@ contract CrownRegistry {
         if (token == address(0) || beneficiary == address(0)) revert ZeroAddress();
         if (_kings[ticker].token != address(0)) revert AlreadyCrowned();
         if (ticker == bytes32(0) || Ticker.ofToken(token) != ticker) revert TickerMismatch();
-        _kings[ticker] = King(token, beneficiary, uint64(block.timestamp));
+        _kings[ticker] = King(token, beneficiary, uint64(block.timestamp), uint64(block.timestamp + MIN_REIGN));
         emit Crowned(ticker, token, beneficiary, 0);
     }
 
@@ -184,7 +198,7 @@ contract CrownRegistry {
         if (msg.sender == k.beneficiary) revert SelfChallenge();
         TickerTotals storage t = tickerTotals[ticker];
         if (t.activeChallengeId != 0) revert ChallengeLive();
-        if (block.timestamp < uint256(k.reignStartedAt) + MIN_REIGN) revert ReignTooShort();
+        if (block.timestamp < k.challengeableAt) revert ReignTooShort();
         if (block.timestamp < t.cooldownUntil) revert CoolingDown();
         if (challengerToken == k.token) revert SameToken();
         if (challengerToken == address(0)) revert ZeroAddress();
@@ -218,9 +232,11 @@ contract CrownRegistry {
     /// @notice Resolves a challenge after its window and timelock. Anyone may call.
     /// @dev The challenger wins iff its stake exceeds the king's and the total meets QUORUM. The losing side keeps
     /// 80%; of the 20% slash, half goes pro rata to the winning side and half to TREASURY (all of it to TREASURY when
-    /// the winning side has no stake). A flip restarts the reign clock (`reignStartedAt`, which gates the next
-    /// challenge by MIN_REIGN) only when the king side was defended with some stake: a crown nobody defended passes
-    /// with the clock untouched, so an uncontested throwaway challenge cannot buy a fresh seven days of immunity.
+    /// the winning side has no stake). A flip always restarts `reignStartedAt`, but it pushes `challengeableAt`
+    /// (which gates the next challenge) MIN_REIGN ahead only when the king side was defended with at least
+    /// MIN_DEFENCE: a crown nobody defended, or one defended with dust whose slash rounds to zero, passes with its
+    /// protection untouched, so a throwaway challenge (from the incumbent's own second wallet or anyone else's)
+    /// cannot buy a fresh seven days of immunity without forfeiting a slash.
     function finalize(uint256 challengeId) external nonReentrant {
         Challenge storage c = challenges[challengeId];
         if (c.openedAt == 0) revert UnknownChallenge();
@@ -252,7 +268,8 @@ contract CrownRegistry {
             address oldToken = k.token;
             k.token = c.challengerToken;
             k.beneficiary = c.challengerBeneficiary;
-            if (kingStake != 0) k.reignStartedAt = uint64(block.timestamp);
+            k.reignStartedAt = uint64(block.timestamp);
+            if (kingStake >= MIN_DEFENCE) k.challengeableAt = uint64(block.timestamp + MIN_REIGN);
             t.dethrones += 1;
             emit Dethroned(
                 ticker, challengeId, oldToken, c.challengerToken, c.challengerBeneficiary, kingStake, challengerStake

@@ -22,7 +22,7 @@ const ZERO = `0x${'0'.repeat(40)}`;
 const hash32 = `0x${'a'.repeat(64)}`;
 const ticker = keccak256(toBytes('CRWN'));
 const eth = parseEther;
-const state = { now: 2_000_000_000, king: A.king, beneficiary: A.beneficiary, reign: 1_999_000_000, active: 0n,
+const state = { now: 2_000_000_000, king: A.king, beneficiary: A.beneficiary, reign: 1_999_000_000, challengeable: 1_999_000_000 + 7 * 86400, active: 0n,
   kingStake: 0n, challengerStake: 0n, ownKing: 0n, ownChallenger: 0n, opens: 0, ends: 0, finalAt: 0, finalized: false,
   won: false, claimed: false, claims: eth('0.003'), operator: false, treasury: eth('0.001'), total: 0n, slashed: 0n,
   simulationError: '', failReads: false, rejectSend: false, holdReceipt: false, registrations: new Map(), long: false };
@@ -39,7 +39,7 @@ function apply(tx) {
   const value = BigInt(tx.value ?? 0);
   if (f === 'openChallenge') { state.active = 1n; state.opens = state.now; state.ends = state.now + 72 * 3600; state.finalAt = state.ends + 86400; state.challengerStake = value; state.ownChallenger = value; state.total += value; }
   if (f === 'stake') { if (Number(args[1]) === 0) { state.kingStake += value; state.ownKing += value; } else { state.challengerStake += value; state.ownChallenger += value; } state.total += value; }
-  if (f === 'finalize') { state.finalized = true; state.won = state.challengerStake > state.kingStake && state.total >= eth('0.05'); state.active = 0n; if (state.won) { state.king = A.challenger; state.beneficiary = A.account; if (state.kingStake > 0n) state.reign = state.now; } }
+  if (f === 'finalize') { state.finalized = true; state.won = state.challengerStake > state.kingStake && state.total >= eth('0.05'); state.active = 0n; if (state.won) { state.king = A.challenger; state.beneficiary = A.account; state.reign = state.now; if (state.kingStake >= eth('0.01')) state.challengeable = state.now + 7 * 86400; } }
   if (f === 'claim') state.claimed = true;
   if (f === 'setOperator') state.operator = args[1];
   if (f === 'redeemClaim') state.claims -= args[1];
@@ -88,6 +88,7 @@ function rpc(method, params = []) {
     if (f === 'poolManager') return encode(A.manager);
     if (f === 'owner') return encode(A.account);
     if (f === 'king') return encode(args[0] === ticker ? [state.king, state.beneficiary, BigInt(state.reign)] : state.registrations.get(args[0]) ?? [ZERO, ZERO, 0n]);
+    if (f === 'challengeableAt') { const r = state.registrations.get(args[0]); return encode(args[0] === ticker ? BigInt(state.challengeable) : r ? r[2] + 7n * 86400n : 0n); }
     if (f === 'tickerTotals') return encode(args[0] === ticker ? [state.active, 0n, state.opens ? 1n : 0n, state.won ? 1n : 0n, state.long ? huge : state.total, state.slashed] : [0n, 0n, 0n, 0n, 0n, 0n]);
     if (f === 'crownPaid') return encode(state.long ? huge : eth(state.won ? '0.002' : '0.001'));
     if (f === 'treasuryOwed') return encode(state.treasury);
