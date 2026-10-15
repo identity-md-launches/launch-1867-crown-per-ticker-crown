@@ -120,6 +120,7 @@ contract CrownRegistry {
     error NothingToClaim();
     error TransferFailed();
     error Reentrancy();
+    error NotSelf();
 
     modifier nonReentrant() {
         if (_locked) revert Reentrancy();
@@ -295,6 +296,17 @@ contract CrownRegistry {
         _payTreasury();
     }
 
+    /// @dev Self-call boundary: a failed transfer rolls back the credit update atomically.
+    /// Only the guarded finalize/payTreasury paths can enter it through _payTreasury.
+    function payTreasuryIsolated() external {
+        if (msg.sender != address(this)) revert NotSelf();
+        uint256 amount = treasuryOwed;
+        treasuryOwed = 0;
+        (bool ok,) = TREASURY.call{value: amount}("");
+        if (!ok) revert TransferFailed();
+        emit TreasuryPaid(amount);
+    }
+
     // ------------------------------------------------------------------ internals
 
     function _stake(Challenge storage c, uint256 challengeId, Side side) private {
@@ -322,11 +334,7 @@ contract CrownRegistry {
     }
 
     function _payTreasury() private {
-        uint256 amount = treasuryOwed;
-        if (amount == 0) return;
-        treasuryOwed = 0;
-        (bool ok,) = TREASURY.call{value: amount}("");
-        if (ok) emit TreasuryPaid(amount);
-        else treasuryOwed = amount;
+        if (treasuryOwed == 0) return;
+        try this.payTreasuryIsolated() {} catch {}
     }
 }

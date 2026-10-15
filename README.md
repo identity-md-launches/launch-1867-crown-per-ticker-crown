@@ -21,7 +21,8 @@ CrownHook. That token is the genesis king of ticker CRWN, and its beneficiary is
 | `src/HookFlags.sol` | The v4 permission bits and CrownHook's flag set (`0x10CC`). |
 | `script/DeployChallenger.s.sol` | Deploys the challenger candidate token. |
 | `script/DeployCrown.s.sol` | Manual or rehearsal deployment of the hook at a mined flag address through the CREATE2 deployer. |
-| `site/` | The static ticker page: `index.html`, `app.js`, `config.js`. |
+| `site/` | Vite, React and TypeScript ticker frontend; source, package manifest and lockfile. See `site/README.md`. |
+| `dist/` | Production static export with local assets, runtime public configuration and compiled ABIs. |
 | `test/` | Foundry tests: registry math, hook integration, end-to-end dethrone, token and scripts. |
 
 ## Compiler settings (pinned in `foundry.toml`, used for Sourcify verification)
@@ -192,9 +193,10 @@ repository's scripts.
 
 ## After launch
 
-1. **Site:** set `hook` in `site/config.js` to the deployed CrownHook address from the launch record. The registry
-   address is read from `hook.registry()`. Then host `site/` as static files. Until then, the page shows a
-   "not configured" message.
+1. **Site:** supply the real deployment handoff, or set the actual CrownHook entry in `site/public/crown-config.json`,
+   and rebuild with `npm --prefix site run build`. The registry is read from `hook.registry()`. Publish the complete
+   repo-root `dist/`. No handoff was supplied for this frontend assignment, so this export honestly shows
+   "Awaiting deployment" and disables transactions. See `site/README.md` for configuration and validation.
 2. **Challenger candidate:** run
    `CHALLENGER_HOLDER=<wallet> forge script script/DeployChallenger.s.sol --rpc-url https://rpc.mainnet.chain.robinhood.com --broadcast`.
    This deploys a second, distinct "Crown Demo"/CRWN ERC-20.
@@ -241,7 +243,7 @@ repository's scripts.
 * The `$owner` wallet receives the CRWN cut until it is dethroned. It must be able to receive ETH, or else redeem
   claims.
 * Someone must call `finalize` after each timelock, and each staker must call `claim`. Nothing happens automatically.
-* The site needs the hook address set after launch.
+* The site needs the actual deployment configuration after launch; see `site/README.md`.
 * Tests passing is not an audit. This code moves other people's ETH in every swap and holds stakes. **An independent
   adversarial review is required before real funds use it.**
 
@@ -263,3 +265,9 @@ repository's scripts.
     and that `crownPaid` equals the transfers.
 * `test/CrownToken.t.sol`:
   * the token's supply and transfers; the challenger deploy script; the hook deploy script's salt mining.
+
+## Frontend delivery and validation
+
+The canonical ticker UI includes live reads, EIP-6963 and Coinbase wallet connections, mobile wallet links, challenge/stake/finalize/refund controls, fee-claim authorization and redemption, treasury retries, and an owner-only future-pool configuration panel. Its runtime configuration is centralized and its assets are local.
+
+See [site/README.md](site/README.md) for install/build/preview and deployment binding, [DESIGN.md](DESIGN.md) for design tokens and responsive behavior, [VALIDATION.md](VALIDATION.md) for executed checks and live-chain limitations, and [REVIEW.md](REVIEW.md) for the scoped treasury fallback change that removes the required Slither high finding.

@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "chainId": 4663,
+  "chainName": "Robinhood Chain",
+  "rpcUrls": ["https://rpc.mainnet.chain.robinhood.com"],
+  "explorerUrl": "https://robinhoodchain.blockscout.com",
+  "nativeCurrency": { "name": "Ether", "symbol": "ETH", "decimals": 18 },
+  "contracts": [],
+  "abis": {
+    "CrownHook": "abi/CrownHook.json",
+    "CrownRegistry": "abi/CrownRegistry.json",
+    "CrownToken": "abi/CrownToken.json",
+    "CrownChallengerToken": "abi/CrownChallengerToken.json",
+    "PoolManager": "abi/PoolManager.json"
+  }
+}

@@ -342,6 +342,27 @@ contract CrownRegistryTest is Test {
         assertEq(TREASURY.balance, 0.002 ether);
     }
 
+    function test_treasuryIsolatedPayment_isSelfOnlyAndFailedRetriesPreserveCredit() public {
+        vm.etch(TREASURY, address(new RejectEther()).code);
+        uint256 id = open();
+        finalizeAfterWindow(id);
+        uint256 credit = registry.treasuryOwed();
+        uint256 balance = address(registry).balance;
+        vm.prank(TREASURY);
+        vm.expectRevert(CrownRegistry.NotSelf.selector);
+        registry.payTreasuryIsolated();
+        registry.payTreasury();
+        registry.payTreasury();
+        assertEq(registry.treasuryOwed(), credit);
+        assertEq(address(registry).balance, balance);
+        vm.etch(TREASURY, "");
+        registry.payTreasury();
+        registry.payTreasury();
+        assertEq(registry.treasuryOwed(), 0);
+        assertEq(TREASURY.balance, credit);
+        assertEq(address(registry).balance, balance - credit);
+    }
+
     // ------------------------------------------------------------------ conservation
 
     function testFuzz_conservation(uint64[3] memory k, uint64[3] memory c) public {

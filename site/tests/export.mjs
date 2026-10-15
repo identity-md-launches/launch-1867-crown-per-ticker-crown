@@ -1,0 +1,41 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { cp, mkdir, readFile, writeFile, readdir, rm } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
+import { keccak256, toBytes } from 'viem';
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+const fixture = resolve(root, 'test/scratch/export-fixture');
+await rm(fixture, { force: true, recursive: true });
+await mkdir(resolve(fixture, '.imd/reads'), { recursive: true });
+await cp(resolve(root, 'dist'), resolve(fixture, 'dist'), { recursive: true });
+const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object'
+  ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, canonical(v)])) : value;
+const abi = JSON.parse(await readFile(resolve(fixture, 'dist/abi/CrownHook.json'), 'utf8'));
+const contract = { name: 'CrownHook', address: '0x10000000000000000000000000000000000010cc', abiHash: keccak256(toBytes(JSON.stringify(canonical(abi)))).slice(2) };
+const poolKey = { currency0: `0x${'0'.repeat(40)}`, currency1: '0x4000000000000000000000000000000000000004', fee: 12500, tickSpacing: 60, hooks: contract.address };
+const handoff = { launchId: 'export-test-only', chainId: 4663, sourceCommit: 'abcdef'.repeat(6) + 'abcd', attestationHash: 'ab'.repeat(32), contracts: [contract], poolKey };
+const base = JSON.parse(await readFile(resolve(fixture, 'dist/crown-config.json'), 'utf8'));
+const network = { name: base.chainName, testnet: false, rpcUrls: base.rpcUrls, explorer: base.explorerUrl, nativeCurrency: base.nativeCurrency,
+  uniswapV4: { poolManager: '0x3000000000000000000000000000000000000003', extendedSwapParams: true } };
+const walletAddChain = { chainId: '0x1237', chainName: network.name, rpcUrls: network.rpcUrls, nativeCurrency: network.nativeCurrency, blockExplorerUrls: [network.explorer] };
+await writeFile(resolve(fixture, '.imd/reads/deployment.json'), JSON.stringify(handoff));
+await writeFile(resolve(fixture, '.imd/reads/network.json'), JSON.stringify({ network, walletAddChain }));
+const run = () => spawnSync(process.execPath, [resolve(root, 'site/scripts/export.mjs'), fixture], { encoding: 'utf8' });
+const good = run(); assert.equal(good.status, 0, good.stderr);
+const manifest = JSON.parse(await readFile(resolve(fixture, 'dist/imd-deployment.json'), 'utf8'));
+assert.deepEqual(Object.keys(manifest).sort(), ['version', 'launchId', 'chainId', 'sourceCommit', 'attestationHash', 'contracts', 'assets', 'network', 'walletAddChain', 'poolKey'].sort());
+assert.deepEqual(manifest.network, network); assert.deepEqual(manifest.walletAddChain, walletAddChain); assert.deepEqual(manifest.poolKey, poolKey);
+assert.equal(manifest.contracts[0].abiHash, contract.abiHash);
+assert.equal(manifest.contracts[0].address, contract.address);
+assert.equal(manifest.contracts.length, handoff.contracts.length);
+const all = async dir => (await Promise.all((await readdir(dir, { withFileTypes: true })).map(async file => file.isDirectory() ? all(`${dir}/${file.name}`) : `${dir}/${file.name}`))).flat();
+const files = (await all(`${fixture}/dist`)).filter(f => !f.endsWith('/imd-deployment.json'));
+assert.equal(manifest.assets.length, files.length);
+for (const asset of manifest.assets) assert.equal(asset.sha256, createHash('sha256').update(await readFile(resolve(fixture, 'dist', asset.path))).digest('hex'));
+assert.equal(JSON.parse(await readFile(resolve(fixture, 'dist/crown-config.json'), 'utf8')).deploymentPath, 'imd-deployment.json');
+await writeFile(resolve(fixture, 'dist/abi/CrownHook.json'), '[]');
+assert.notEqual(run().status, 0, 'A tampered ABI must refuse export');
+console.log('PASS exact handoff identifiers, contract set, pool key, unchanged network and wallet-add-chain data, every asset hash, runtime selection and ABI-tamper rejection.');
