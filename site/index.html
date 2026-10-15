@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CROWN — one king per ticker</title>
+<style>
+  :root { --bg:#0f1115; --card:#181b22; --fg:#e8e8ea; --dim:#9aa0aa; --gold:#e6b422; --red:#e55; --green:#4c9; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--fg); }
+  header, main { max-width: 960px; margin: 0 auto; padding: 16px; }
+  header { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+  h1 { margin:0; color:var(--gold); letter-spacing:2px; }
+  h2 { margin:0 0 8px; font-size:17px; }
+  .card { background:var(--card); border-radius:10px; padding:16px; margin:12px 0; }
+  .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap:12px; }
+  .kv { display:flex; justify-content:space-between; gap:8px; border-bottom:1px solid #262a33; padding:4px 0; }
+  .kv span:first-child { color:var(--dim); }
+  .mono { font-family: ui-monospace, monospace; word-break: break-all; }
+  input, select, button { font:inherit; padding:8px 10px; border-radius:6px; border:1px solid #333; background:#0f1115; color:var(--fg); }
+  button { background:var(--gold); color:#111; border:none; cursor:pointer; font-weight:600; }
+  button:disabled { opacity:.5; cursor:default; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; margin:6px 0; }
+  .bar { height:12px; background:#262a33; border-radius:6px; overflow:hidden; display:flex; }
+  .bar .k { background:var(--gold); } .bar .c { background:var(--red); }
+  #status { color:var(--dim); min-height:1.5em; }
+  a { color: var(--gold); }
+</style>
+</head>
+<body>
+<header>
+  <h1>👑 CROWN</h1>
+  <div class="row">
+    <input id="ticker" placeholder="Ticker symbol" size="10" />
+    <button id="load">Show ticker</button>
+    <button id="connect">Connect wallet</button>
+  </div>
+</header>
+<main>
+  <div id="status"></div>
+
+  <section class="grid">
+    <div class="card">
+      <h2>Current king</h2>
+      <div class="kv"><span>Ticker</span><span id="t-symbol">—</span></div>
+      <div class="kv"><span>King token</span><span id="k-token" class="mono">—</span></div>
+      <div class="kv"><span>Beneficiary (paid on every swap)</span><span id="k-benef" class="mono">—</span></div>
+      <div class="kv"><span>Reigning since</span><span id="k-since">—</span></div>
+      <div class="kv"><span>Challengeable from</span><span id="k-open">—</span></div>
+    </div>
+    <div class="card">
+      <h2>Crown paid</h2>
+      <div class="kv"><span>Total paid to kings of this ticker (ETH)</span><span id="paid-eth">—</span></div>
+      <div class="kv"><span>Challenges</span><span id="tt-challenges">—</span></div>
+      <div class="kv"><span>Dethrones</span><span id="tt-dethrones">—</span></div>
+      <div class="kv"><span>Total ever staked (ETH)</span><span id="tt-staked">—</span></div>
+      <div class="kv"><span>Total slashed (ETH)</span><span id="tt-slashed">—</span></div>
+      <div class="kv"><span>Failed-challenge cooldown until</span><span id="tt-cooldown">—</span></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Live challenge</h2>
+    <div id="no-challenge">No live challenge for this ticker.</div>
+    <div id="challenge" hidden>
+      <div class="kv"><span>Challenge #</span><span id="c-id"></span></div>
+      <div class="kv"><span>Challenger token</span><span id="c-token" class="mono"></span></div>
+      <div class="kv"><span>Challenger beneficiary</span><span id="c-benef" class="mono"></span></div>
+      <div class="kv"><span>Staking closes</span><span id="c-ends"></span></div>
+      <div class="kv"><span>Finalizable from (after 24h timelock)</span><span id="c-final"></span></div>
+      <div class="kv"><span>Time remaining</span><span id="c-left"></span></div>
+      <div class="kv"><span>King stake (ETH)</span><span id="c-kstake"></span></div>
+      <div class="kv"><span>Challenger stake (ETH)</span><span id="c-cstake"></span></div>
+      <div class="kv"><span>Quorum (0.05 ETH total)</span><span id="c-quorum"></span></div>
+      <div class="bar"><div class="k" id="bar-k"></div><div class="c" id="bar-c"></div></div>
+      <div class="kv"><span>If finalized now</span><span id="c-outcome"></span></div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card">
+      <h2>Stake</h2>
+      <div class="row">
+        <select id="side"><option value="0">Back the king</option><option value="1">Back the challenger</option></select>
+        <input id="stake-amt" placeholder="ETH" size="8" />
+        <button id="stake">Stake</button>
+      </div>
+      <div class="row"><button id="finalize">Finalize</button></div>
+      <div class="row">
+        <input id="claim-id" placeholder="Challenge #" size="8" />
+        <button id="claimable">Check</button><button id="claim">Claim</button>
+      </div>
+      <div id="claim-info" class="mono"></div>
+    </div>
+    <div class="card">
+      <h2>Challenge the king</h2>
+      <p>Bond 0.01 ETH (it counts as your stake on the challenger side). Your wallet becomes the beneficiary if you win.</p>
+      <div class="row"><input id="ch-token" placeholder="Challenger token address (same symbol)" size="44" /></div>
+      <div class="row"><button id="open">Open challenge (0.01 ETH)</button></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>How it works</h2>
+    <ol>
+      <li><b>One king per ticker.</b> Every ticker (the uppercase symbol, like CRWN) has one crowned token. The first token registered for a ticker is its king. The CRWN launch token was crowned the moment its pool opened, and its beneficiary is the launch payer's wallet.</li>
+      <li><b>Every swap pays the king.</b> Pools that use the CrownHook take a small cut of each swap (1% by default, never more than 5%), always in ETH. The cut goes to the current king's beneficiary in the same transaction. The hook never keeps the money. If the payment can't go through, the swap still happens. It goes ahead either without the cut or with the cut paid as a claim the beneficiary can redeem.</li>
+      <li><b>Anyone can challenge.</b> After a king has reigned for 7 days, anyone can put up a 0.01 ETH bond to challenge it with another token that has the same symbol. Only one challenge per ticker can run at a time.</li>
+      <li><b>Stake to vote.</b> For 72 hours anyone can stake ETH for the king or for the challenger.</li>
+      <li><b>Resolution.</b> After the 72 hours and another 24-hour timelock, anyone can finalize. The challenger wins only if it has more stake than the king <i>and</i> at least 0.05 ETH was staked in total. If the challenger wins, the registry crowns the challenger's token and every later swap pays the new king.</li>
+      <li><b>Payouts.</b> The winning side gets all of its stake back. The losing side gets 80% back. The other 20% is slashed: half goes to the winning side's stakers in proportion to their stake, and half goes to the CROWN treasury. Everyone claims their own share with <i>Claim</i>.</li>
+      <li><b>No admin.</b> The registry has no owner and no admin functions. Every outcome follows these rules.</li>
+    </ol>
+  </section>
+</main>
+<script src="config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
