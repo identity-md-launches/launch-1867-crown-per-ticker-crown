@@ -1,0 +1,31 @@
+{
+  "kind": "univ4_hook",
+  "hook": {
+    "contract": "CrownHook",
+    "constructorArgs": [
+      "$poolManager",
+      "$factory",
+      "$owner"
+    ],
+    "permissions": [
+      "afterInitialize",
+      "beforeSwap",
+      "afterSwap",
+      "beforeSwapReturnDelta",
+      "afterSwapReturnDelta"
+    ]
+  },
+  "token": {
+    "contract": "CrownToken",
+    "name": "Crown Demo",
+    "symbol": "CRWN",
+    "decimals": 18
+  },
+  "pool": {
+    "pairedCurrency": "0x0000000000000000000000000000000000000000",
+    "fee": 12500,
+    "tickSpacing": 60,
+    "initialPrice": "79228162514264337593543950336"
+  },
+  "notes": "Deviations from the brief, stated first. (1) When the PoolManager holds too little ETH, a direct beneficiary transfer fails, or the swapper's router already synced a currency the payout would disturb, CrownHook mints ERC-6909 ETH claims to the beneficiary instead of paying the wallet and counts them in crownPaid; the beneficiary redeems them separately. A failed registry read or failure of both payment paths skips the cut. (2) The hook does revert in two cases on a cut-bearing pool: AmountTooLarge for requests above uint128.max, and PartialFill when the pool fills less than the exact-input amount net of the cut (or the exact-output amount plus the cut) reserved in beforeSwap, so the cut is always on what was actually traded; uncharged pools are never refused. Payment failures never revert a swap. Target: Robinhood Chain (4663), CrownToken (Crown Demo / CRWN) paired with native ETH at the 1.25% LP fee; afterInitialize checks no fee tier. CrownHook creates its own adminless CrownRegistry in its constructor, so there is no registry or token constructor argument. Constructor arguments: PoolManager, launch factory, owner, in that order. All callbacks require the PoolManager; afterInitialize additionally requires the initialization sender to be the factory or owner. For the launch pool it derives keccak256 of the uppercase symbol from currency1, registers the pool at the default 100 bps cut and crowns that token with $owner as genesis beneficiary; it reverts with ZeroTicker when the symbol is unreadable and with TickerTaken when the ticker is already held by another token. The owner can configure a future pool's ticker and cut (0-500 bps) before initialization only; live pool settings cannot change. Both swap callbacks and both swap delta permissions are enabled to take the cut from currency0, native ETH, on exact-input and exact-output trades. crownPaid[ticker][currency] counts direct transfers and minted claims. Registry rules: an exact 0.01 ETH bond, counted as challenger stake, opens a challenge after a 7-day minimum reign; the sitting beneficiary cannot challenge itself (SelfChallenge). The staking window is 72 hours followed by a 24-hour timelock. The challenger wins only with strictly more stake and at least 0.05 ETH total; its beneficiary is the challenge opener. A flip against a king with no defending stake does not restart reignStartedAt. Failed challenges impose a 3-day cooldown. Winners recover their stake plus half the 20% losing-side slash; losers share the remaining 80%; all through pull claims. The other slash half goes to treasury 0xf19f11dee16a341671e6ed3e209b704c1bbc3e57, or the whole slash when the winning side has no stake, with a credit retried through payTreasury if the treasury rejects ETH. Rounding remainders go to each side's last claimer. CrownChallengerToken is the separate same-name, same-symbol candidate deployed by script/DeployChallenger.s.sol, not an additional manifest deployment. The repository includes registry and challenge-math tests, a local buy-challenge-stake-finalize-buy integration test, and a ticker site with king, fee totals, challenge state and transaction controls; the site awaits deployment addresses. No live deployment, live dethrone demo or Sourcify verification is asserted here. README records Solidity 0.8.26, Cancun, optimizer 200 runs, viaIR, bytecode_hash none, CBOR metadata on. Pool fields are the launch reference values; the deployer derives the opening price from launch policy."
+}
